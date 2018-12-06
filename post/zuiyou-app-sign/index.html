@@ -1,0 +1,199 @@
+<!doctype html><html><head><meta charset=utf-8><meta http-equiv=content-language content=zh-cn><meta name=viewport content="width=device-width,initial-scale=.5"><title>最右AppSign算法 (Go实现)</title><link rel=stylesheet href=/css/stylesheet.css><link href=https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.13.1/styles/github.min.css rel=stylesheet><script src=https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.13.1/highlight.min.js></script><script src=https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.13.1/languages/go.min.js></script><script>hljs.initHighlightingOnLoad();</script><link rel=stylesheet href=/css/main.css></head><body><script>if(/mobile/i.test(navigator.userAgent)||/android/i.test(navigator.userAgent)){document.body.classList.add('mobile');}else{document.body.classList.remove('mobile');}</script><div class=inner style=position:relative><div class=blog-post><h2>最右AppSign算法 (Go实现)</h2><pre><code class=language-go>/*
+ * Author: ev3rs0u1
+ * Created: 2018-06-13
+ */
+
+package main
+
+import (
+	&quot;bytes&quot;
+	&quot;crypto/md5&quot;
+	&quot;encoding/hex&quot;
+	&quot;encoding/json&quot;
+	&quot;fmt&quot;
+	&quot;io&quot;
+	&quot;io/ioutil&quot;
+	&quot;log&quot;
+	&quot;net/http&quot;
+	&quot;os&quot;
+	&quot;regexp&quot;
+	&quot;time&quot;
+
+	pb &quot;gopkg.in/cheggaaa/pb.v1&quot;
+)
+
+var (
+	u = &quot;http://tbapi.ixiaochuan.cn/topic/posts?sign=%s&quot;
+	f = []byte{0x59, 0x30, 0x4d, 0x54, 0x42, 0x6c, 0x4f, 0x44, 0x63, 0x78, 0x25, 0x73, 0x5a, 0x44, 0x25, 0x73}
+	p = &quot;videos&quot;
+	c = 3
+)
+
+type Result struct {
+	Ret  int
+	Data struct {
+		T    int
+		More int
+		List []struct {
+			Content string
+			Videos  map[string]Field
+		}
+	}
+}
+
+type Field struct {
+	URL      string `json:&quot;url&quot;`
+	Priority int    `json:&quot;priority&quot;`
+	Urlsrc   string `json:&quot;urlsrc&quot;`
+	Urlext   string `json:&quot;urlext&quot;`
+	Urlwm    string `json:&quot;urlwm&quot;`
+}
+
+func main() {
+	var r Result
+	for i := 1; i &lt;= c; i++ {
+		params := map[string]interface{}{
+			&quot;offset&quot;: i * 20,
+			&quot;h_av&quot;:   &quot;4.3.4&quot;,
+			&quot;h_dt&quot;:   0,
+			&quot;h_os&quot;:   24,
+			&quot;h_did&quot;:  &quot;353116063518242_E0:CB:EE&quot;,
+			&quot;h_nt&quot;:   1,
+			&quot;h_m&quot;:    69190343,
+			&quot;h_ch&quot;:   &quot;yingyongbao&quot;,
+			&quot;h_ts&quot;:   getTimestamp(),
+			&quot;token&quot;:  &quot;T7K4NojPStE7ztF9fAZ0OsMdMuv34sGtrn-pWVVz_TYtJJol9a9x291PuZJ9CuopsAujg&quot;,
+			&quot;tid&quot;:    117999, //搞笑:119357 魔性:117999 //103395:抖音
+			&quot;t&quot;:      r.Data.T,
+		}
+
+		body, err := json.Marshal(params)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		url := fmt.Sprintf(u, generateSign(body))
+		resp := request(&quot;POST&quot;, url, body)
+
+		if err := json.Unmarshal([]byte(resp), &amp;r); err != nil {
+			log.Fatalln(err)
+		}
+
+		for n, l := range r.Data.List {
+			for k, v := range l.Videos {
+				title := filterInvalidFilename(l.Content)
+				log.Printf(&quot;[%d]: (%s %s)\n&quot;, n+1, k, title)
+				downloadFile(v.URL, title, k)
+			}
+			fmt.Printf(&quot;\n&quot;)
+		}
+
+		log.Printf(&quot;[%d]: !!! DOWNLOAD FINISH !!!\n&quot;, i)
+	}
+}
+
+func request(method, url string, body []byte) []byte {
+	timeout := time.Duration(3 * time.Second)
+	client := &amp;http.Client{Timeout: timeout}
+
+	buf := bytes.NewBuffer(body)
+	req, err := http.NewRequest(method, url, buf)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	req.Header.Set(&quot;Content-Type&quot;, &quot;text/plain; charset=utf-8&quot;)
+	req.Header.Set(&quot;User-Agent&quot;, &quot;Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2307.2 Safari/537.36&quot;)
+	req.Header.Set(&quot;Cookie&quot;, &quot;aliyungf_tc=AQAAABL8DxkP7QYA9YYadPY51SED1PKm&quot;)
+	req.Header.Set(&quot;Cookie2&quot;, &quot;$Version=1&quot;)
+
+	res, err := client.Do(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	defer res.Body.Close()
+	bytes, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	return bytes
+}
+
+func getTimestamp() int64 {
+	return time.Now().UnixNano() / int64(time.Millisecond)
+}
+
+func generateSign(b []byte) string {
+	h := md5.New()
+	fmt.Fprintf(h, string(f), b[10:], b[:10])
+	hashed := h.Sum(nil)
+	return hex.EncodeToString(hashed)
+}
+
+func filterInvalidFilename(filename string) string {
+	re := regexp.MustCompile(`(?s)[\s\\/:&quot;*?&lt;&gt;|.]+`)
+	s := re.ReplaceAllString(filename, &quot;&quot;)
+	if len(s) == 0 {
+		s = &quot;Others&quot;
+	}
+	return s
+}
+
+func isDirExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func downloadFile(url, dirname, filename string) {
+	dirpath := fmt.Sprintf(&quot;./%s/%s&quot;, p, dirname)
+	exist, err := isDirExists(dirpath)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	if !exist {
+		err := os.Mkdir(dirpath, os.ModePerm)
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}
+
+	filepath := fmt.Sprintf(&quot;%s/%s.mp4&quot;, dirpath, filename)
+	out, err := os.Create(filepath)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer out.Close()
+
+	res, err := http.DefaultClient.Get(url)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer res.Body.Close()
+
+	size := res.ContentLength
+
+	bar := pb.New(int(size)).
+		SetUnits(pb.U_BYTES_DEC).
+		SetRefreshRate(time.Millisecond * 200)
+	bar.ShowBar = false
+	bar.ShowFinalTime = false
+	bar.Start()
+
+	reader := bar.NewProxyReader(res.Body)
+	_, err = io.Copy(out, reader)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	bar.Finish()
+}
+</code></pre><br></div><footer><hr><small style=font-size:16px>&copy; 2018 <a href=https://github.com/ev3rs0u1>ev3rs0u1.</a></small></footer></div><script src=https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.slim.min.js integrity=sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo crossorigin=anonymous></script><script src=https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.7/js/bootstrap.min.js></script></body></html>
